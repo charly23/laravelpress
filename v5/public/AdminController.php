@@ -13,8 +13,10 @@ use Illuminate\Database\Eloquent\Model;
 // Illuminate
 use Illuminate\Http\Request;
 use Illuminate\Http\Dispatcher; 
+use Illuminate\Http\Response;
 
 // Facaded
+use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Facades\Input;
 use Illuminate\Support\Facades\Session;
 use Illuminate\Support\Facades\Auth;
@@ -32,6 +34,7 @@ use Crypt;
 use Illuminate\Foundation\Bus\DispatchesJobs;
 use Illuminate\Validation\Validator as Validate;
 use Illuminate\Foundation\Validation\ValidatesRequests;
+use Illuminate\Contracts\Routing\ResponseFactory;
 
 // Collective
 use Collective\Html\FormBuilder;
@@ -127,16 +130,6 @@ class AdminController extends Controller
             'value' => ''
         ];
 
-        $meta[] = [
-            'key'   => '',
-            'value' => ''
-        ];
-
-        $meta[] = [
-            'key'   => '',
-            'value' => ''
-        ];
-
         $type = $this->type(true,$vals);
         $keys = ($type!=false) ? $meta : null;
 
@@ -190,6 +183,11 @@ class AdminController extends Controller
         return DB::table('posts')->where('id',$id)->get();
     }
 
+    public function meta_value ($id=0) 
+    {
+        return DB::table('posts_meta')->where(['posts_id'=>$id])->get();
+    }
+
     /**
      * app.config controller load function handler for author information.
      *
@@ -231,6 +229,7 @@ class AdminController extends Controller
             'url'       =>  $this->url,
             'rows'      =>  $this->rows($this->intel($subpage)),
             'meta'      =>  $this->meta($type),
+            'meta_value'=>  $this->meta_value($this->intel($subpage)),
             'querys'    =>  $this->querys
         ];
 
@@ -457,32 +456,32 @@ class AdminController extends Controller
      *
      * @return \Illuminate\Http\Response
      */
-
     public function action () 
     {
         $inputs = $this->request->all();
         $sessions = $this->request->session()->all();
 
-        if ($this->request->isMethod('post') AND $this->request->has('_token'))  :
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'posts-action' )  :
 
             $ids    = ($this->request->id);
             $fields = ($this->request->fields);
+            $metas  = ($this->request->meta);
 
-            if(!is_null($fields)) : foreach($fields as $keys => $vals) : $name = $vals['name'];
+            if(!is_null($fields)) : foreach($fields as $keys => $vals) : 
+                    $name         = $vals['name'];
                     $datas[$name] = $vals['value'];
                     $rules[$name] = 'required';
                 endforeach;
             endif;
 
             $author = [
-                'parent'    => 0,
                 'status'    => 1,
                 'author'    => 0,
                 'date'      => date("Y-m-d H:i:s")    
             ];
 
             $merge = array_merge($datas,$author);
-
+            
             $messages = [
                 'title.required' => 'The (:attribute) field is required',
             ];
@@ -491,7 +490,31 @@ class AdminController extends Controller
             $errors = $validator->errors(); 
 
             if($validator->fails() != true AND is_array($merge)) :
-                return ($ids==0) ? DB::table('posts')->insertGetId($merge) : DB::table('posts')->where('id',$ids)->update($merge);
+
+                $metas_id = $this->meta_insert($ids,$metas);
+
+                if($ids==0) :
+
+                    $posts_id = DB::table('posts')->insertGetId($merge);
+                
+                    $return = [
+                        'posts_id'  => $posts_id,
+                        'metas_id'  => $metas_id
+                    ];
+
+                else :
+
+                    DB::table('posts')->where('id',$ids)->update($merge);
+
+                    $return = [
+                        'posts_id'  => $ids,
+                        'metas_id'  => $metas_id
+                    ];
+
+                endif;
+
+                return response()->json($return);
+
             endif;
 
             if($validator->fails() != false) :
@@ -504,5 +527,30 @@ class AdminController extends Controller
         if (!$this->request->session()->has('username')) {
             return redirect('/admin');
         }
+
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'meta-action' )  :
+            return $this->view('admin/pages/posts/meta');
+        endif;
+
+        die();
+    }
+
+    public function meta_insert ($id=null,$meta=null) 
+    {
+        $metas = [];
+        if(count($meta)>=0 AND is_array($meta)) : foreach($meta as $keys => $vals) :
+                $mids = $vals['id'];
+                $data = array_merge($vals,['posts_id'=>$id]);
+                unset($data['id']);
+                if($mids==0) :
+                    $ids = DB::table('posts_meta')->insertGetId($data);
+                else :
+                    DB::table('posts_meta')->where('id',$mids)->update($data);
+                    $ids = $mids;
+                endif;
+                $metas[] = $ids;
+            endforeach;
+        endif; 
+        return $metas;
     }
 }
