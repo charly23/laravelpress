@@ -1,2 +1,2 @@
 # laravelpress
-Laravelpress(LP)
+Laravelpress(LP) : public scripts
