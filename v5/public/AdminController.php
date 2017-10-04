@@ -3,8 +3,10 @@ namespace App\Http\Controllers\Admin;
 
 // App
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Admin\LoaderController;
 use App\Http\Controllers\Admin\MailController;
 use App\Http\Controllers\Admin\MenuController;
+use App\Http\Controllers\Admin\AppearanceController;
 
 // Database
 use Illuminate\Support\Facades\DB;
@@ -49,7 +51,7 @@ use App\Includes\ThumbFeatured;
 class AdminController extends Controller
 {
     /**
-     * loo label default 0 modular
+     * load label default 0 modular
      */
     public $i = 0;
 
@@ -68,16 +70,18 @@ class AdminController extends Controller
     /**
      * Create a new controller instance.
      *
-     * @return void
+     * @return void    
      */
-    public function __construct(Request $request,UrlGenerator $url,MailController $mail,MenuController $menu,DBQuerys $querys,ThumbFeatured $featured)
+    public function __construct(Request $request,UrlGenerator $url,MailController $mail,MenuController $menu,PostsController $posts,DBQuerys $querys,ThumbFeatured $featured, AppearanceController $appearance)
     {
-        $this->request  = $request;
-        $this->url      = $url;
-        $this->mail     = $mail;
-        $this->menu     = $menu;
-        $this->querys   = $querys;
-        $this->featured = $featured;
+        $this->request      = $request; 
+        $this->url          = $url;
+        $this->mail         = $mail;
+        $this->menu         = $menu;
+        $this->querys       = $querys;
+        $this->featured     = $featured;
+        $this->posts        = $posts;
+        $this->appearance   = $appearance;
     }
 
     /**
@@ -142,16 +146,27 @@ class AdminController extends Controller
     {
         $in_dashboard = [
             1 => 'home',
-            2 => 'updates'
+            2 => 'updates',
+            3 => 'themes',
+            4 => 'profile'
         ];
 
         $in_value = [
             1 => 'add',
-            2 => 'edit',
-            3 => 'category'
+            2 => 'create',
+            3 => 'edit',
+            4 => 'update',
+            5 => 'category'
         ];
 
-        $in_key = array_merge($in_dashboard,$in_value);
+        $in_filter = [
+            1 => 'all',
+            2 => 'publish',
+            3 => 'draft',
+            4 => 'trash'
+        ];
+
+        $in_key = array_merge($in_dashboard,$in_value,$in_filter);
 
         $end  = end($subpage);
         $ints = is_numeric($end) ? true : false;
@@ -161,7 +176,7 @@ class AdminController extends Controller
         } else if($ints==true) {
             $current = ($subpage[count($subpage)-3]);
         } else {
-            $current = $ints != false ?  ($subpage[count($subpage)-2]) : ($end);
+            $current = $ints != false ? ($subpage[count($subpage)-2]) : ($end);
         }
 
         return ($current);
@@ -203,9 +218,14 @@ class AdminController extends Controller
      * @return objects
      */
     
-    public function appconfig () 
-    {
-        return ['author' => config('app.author'), 'website' => config('app.website'), 'version' => config('app.version')];
+    public function appconfig () {
+        return [
+            'name'      => config('app.name'),
+            'author'    => config('app.author'), 
+            'website'   => config('app.website'),
+            'version'   => config('app.version'),
+            'info'      => config('app.info')
+        ];
     }
 
     /**
@@ -234,6 +254,7 @@ class AdminController extends Controller
             'table'     =>  $this->table,
             'type'      =>  $type,
             'menu'      =>  $this->menu,
+            'posts'     =>  $this->posts,
             'request'   =>  $this->request,
             'session'   =>  $data,
             'url'       =>  $this->url,
@@ -245,6 +266,11 @@ class AdminController extends Controller
         ];
 
         return $returns;
+    }
+
+    public function external_load () 
+    {
+        // external loader
     }
 
     /**
@@ -333,10 +359,16 @@ class AdminController extends Controller
      *
      * @return \Illuminate\Http\Response
      */
+
     public function page ($page=null) 
     {
         if( $this->request->session()->exists('username') AND $this->request->session()->exists('password')) {
-            return $this->show($page,null);
+
+            if($this->appearance->is_page($page)==true) {
+                return $this->template_actions('admin/pages/'.$page,$this->appearance->active(true));
+            } else {
+                return $this->show($page,null);
+            }
         } else {
             return $this->template('admin/interface/login');
         }
@@ -345,7 +377,12 @@ class AdminController extends Controller
     public function subpage ($page=null,$subpage=null) 
     {
         if( $this->request->session()->exists('username') AND $this->request->session()->exists('password')) {
-            return $this->show($page,$subpage);
+
+            if($this->appearance->is_page($page)==true) {
+                return $this->template_actions('admin/pages/'.$page,$this->appearance->disable());
+            } else {
+                return $this->show($page,$subpage);
+            }
         } else {
             return $this->template('admin/interface/login');
         }
@@ -372,7 +409,10 @@ class AdminController extends Controller
 
     public function manual ($page=null) 
     {
-        $manual = ['media'];
+        $manual = [
+            'media',
+            'appearance'
+        ];
         $type = $this->type(true,$page);
         if($type != true AND in_array($page,$manual)) {
             return $this->template('admin/pages/'.$page);
@@ -474,38 +514,48 @@ class AdminController extends Controller
         $errors = $validator->errors();
 
         $querys = $this->querys->get_users_by_name($username);
+
+        $username_validate = isset($querys->username) ? true : false;
         $password_validate = isset($querys->password) ? trim($querys->password) : null;
 
         $is_password = Hash::check($this->request->password,$password_validate) ? true : false;
         $confirmation_code = str_random(30);
+
+        if($username_validate==true) :
         
-        if ( $validator->fails() != true AND $is_password != false ) {
+            if ( $validator->fails() != true AND $is_password != false ) {
 
-            $exists = $this->autoLogin($username);    
+                $exists = $this->autoLogin($username);    
 
-            if($exists != false) :
+                if($exists != false) :
 
-                foreach($inputs as $keys => $vals) : if ($this->request->has($keys)) :
-                        $this->request->session()->put($keys,$vals);
+                    foreach($inputs as $keys => $vals) : if ($this->request->has($keys)) :
+                            $this->request->session()->put($keys,$vals);
+                        endif;
+                    endforeach;
+
+                    if ($this->request->session()->has('username') AND $this->request->session()->has('password')) :
+                        return redirect('/admin');
                     endif;
-                endforeach;
-                
-                if ($this->request->session()->has('username') AND $this->request->session()->has('password')) :
-                    return redirect('/admin');
+
                 endif;
 
+                if($exists != true) :
+                    return $this->template('admin/interface/login',["Username - Not Exists ({$username})"]);
+                endif;
+
+            } else {
+
+                $message = count($errors->all()) !=0 ? $errors->all() : ['Password - Wrong'];
+                return $this->template('admin/interface/login',$message);
+            }
+
+        else :
+
+            $message = count($errors->all()) !=0 ? $errors->all() : ['Username - Not Exists'];
+            return $this->template('admin/interface/login',$message);    
+
             endif;
-
-            if($exists != true) :
-                return $this->template('admin/interface/login',["Username - Not Exists ({$username})"]);
-            endif;
-
-        } else {
-
-            $message = count($errors->all()) !=0 ? $errors->all() : ['Password - Wrong'];
-            return $this->template('admin/interface/login',$message);
-        }
-
         endif;
     }
 
@@ -572,6 +622,18 @@ class AdminController extends Controller
             return $this->view_id('admin/pages/media/selected',$media_id);
         endif;
 
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'categorys-action' )  :
+            return $this->categoryInsert();
+        endif;
+
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'categorys-row' )  :
+            return $this->categoryInsertRow();
+        endif;
+
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'comments-reply' )  :
+            return $this->view('admin/pages/comments/reply');
+        endif;
+
         /**
          * actions-handler
          * phpscripts-load action-handler
@@ -599,11 +661,16 @@ class AdminController extends Controller
     public function postsInsert () 
     {
         $dval   = null;
+
+        $data = $this->request->session()->all();
+
         $ids    = intval($this->request->id);
         $mid    = intval($this->request->mid);
         $fields = ($this->request->fields);
         $dates  = ($this->request->date);
+        $status = intval($this->request->status);
         $metas  = ($this->request->meta);
+        $categorys = ($this->request->category);
 
         if(!is_null($fields)) : foreach($fields as $keys => $vals) : $name = $vals['name'];
                 $datas[$name] = $vals['value'];
@@ -611,16 +678,25 @@ class AdminController extends Controller
             endforeach;
         endif;
 
+        $dvalue = null;
         if(!is_null($dates)) : foreach($dates as $dkeys => $dvals) :
-               var_dump($dvals['value']);
+                if(in_array($dkeys,array(0,1))) :
+                    $dvalue .= ($dvals['value']).'-';
+                elseif(in_array($dkeys,array(2))):
+                    $dvalue .= ($dvals['value']).' ';
+                elseif(in_array($dkeys,array(3))):
+                    $dvalue .= ($dvals['value']);
+                endif;    
             endforeach;
         endif;
 
+        $querys = $this->querys->get_users_by_name($data['username']);
+
         $author = [
-            'status'    => 1,
+            'status'    => $status,
             'mid'       => $mid,
-            'author'    => 0,
-            'date'      => date("Y-m-d H:i:s")    
+            'author'    => $querys->id,
+            'date'      => $dvalue    
         ];
 
         $merge = array_merge($datas,$author);
@@ -635,6 +711,8 @@ class AdminController extends Controller
         if($validator->fails() != true AND is_array($merge)) :
 
             $metas_id = $this->metaInsert($ids,$metas);
+
+            $this->catsInsert($categorys,$ids);
 
             if($ids==0) :
 
@@ -691,19 +769,48 @@ class AdminController extends Controller
     }
 
     /**
+     * application event - action function (cats-insert).
+     *
+     * @return \Illuminate\Http\Response
+     */
+    public function catsInsert ($categorys=[],$ids=0) 
+    {
+        if(count($categorys) > 0) : 
+            foreach($categorys as $ckeys => $cvals) :
+
+                $cid = intval($cvals['id']);
+                $option = ($cvals['option']);
+
+                $cats_exists = DB::table('categorys_meta')->where(['cid'=>$cid,'pid'=>$ids])->first();
+                $cats = $cats_exists == true ? intval($cats_exists->id) : 0;
+
+                if($cats != 0 ) :
+                    DB::table('categorys_meta')->where('id',$cats)->update(['cid'=>$cid,'pid'=>$ids,'option'=>$option]);
+                else :
+                    DB::table('categorys_meta')->insert(['cid'=>$cid,'pid'=>$ids,'option'=>$option]);
+                endif;
+
+            endforeach;
+        endif;
+    } 
+
+    /**
      * application event - action function (media-insert).
      *
      * @return \Illuminate\Http\Response
      */
     public function mediaInsert ($id=null) 
     {
+        $data   = null;
         $files  = $this->request->file('media-file');
         $fields = $this->request->all();
 
         $avl = [
             '_token',
             'id',
-            'media-action'
+            'media-action',
+            'width',
+            'height'
         ];
 
         if(!is_null($files) && count($files)>=0 || is_array($files)) : 
@@ -741,7 +848,10 @@ class AdminController extends Controller
                     endif;
                 endforeach;
             endif;
-            DB::table('media')->where('id',$id)->update($data);
+
+            if(!is_null($data)) :
+                DB::table('media')->where('id',$id)->update($data);
+            endif;
 
         endif;
 
@@ -751,6 +861,69 @@ class AdminController extends Controller
             return redirect('/admin/media');
         }
 
+    }
+
+    /**
+     * application event - action function (category-insert).
+     *
+     * @return \Illuminate\Http\Response
+     */
+    public function categoryInsert () 
+    {
+        $ids = intval($this->request->ids);
+        $fields = $this->request->fields;
+
+        $avl = [
+            '_token',
+            'id',
+            'action'
+        ];
+
+        if(!is_null($fields)) : foreach($fields as $keys => $vals) : $name = $vals['name'];
+                $datas[$name] = $vals['value'];
+                $rules[$name] = 'required';
+            endforeach;
+        endif;
+
+        $author = [
+            'author'    => 0,
+            'date'      => date("Y-m-d H:i:s")    
+        ];
+
+        $merge = array_merge($datas,$author);
+
+        $validator = Validator::make($datas,$rules);
+        $errors = $validator->errors(); 
+
+        if($validator->fails() != true) :
+
+            if( $ids !=0 ) :
+
+                DB::table('categorys')->where('id',$ids)->update($merge);
+                $return = ['cid'=>$ids];
+
+            else :
+
+                $ids = DB::table('categorys')->insertGetId($merge);
+                $return = ['cid'=>$ids];
+
+            endif;
+
+            return response()->json($return);
+
+        endif;
+
+        if($validator->fails() != false) :
+            $message = $errors->all();
+            return $this->view('admin/pages/posts/validate',$message);
+        endif;
+    }
+
+    public function categoryInsertRow () 
+    {
+        $ids = intval($this->request->ids);
+        var_dump($ids);
+        return $this->view('admin/pages/posts/categoryrow');
     }
 
     /**
