@@ -7,6 +7,7 @@ use App\Http\Controllers\Admin\LoaderController;
 use App\Http\Controllers\Admin\MailController;
 use App\Http\Controllers\Admin\MenuController;
 use App\Http\Controllers\Admin\AppearanceController;
+use App\Http\Controllers\Admin\CommentsController;
 
 // Database
 use Illuminate\Support\Facades\DB;
@@ -23,15 +24,16 @@ use Illuminate\Support\Facades\Input;
 use Illuminate\Support\Facades\Session;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
-
 use Illuminate\Routing\UrlGenerator;
 use Illuminate\Foundation\Auth\AuthenticatesUsers;
 use Illuminate\Validation\Rule;
 
-// Validator
+// Aliases
 use View;
 use Validator;
 use Crypt;
+use File;
+use Storage;
 
 use Illuminate\Foundation\Bus\DispatchesJobs;
 use Illuminate\Validation\Validator as Validate;
@@ -45,6 +47,7 @@ use Collective\Html\HtmlBuilder;
 // App - Includes
 use App\Includes\DBQuerys;
 use App\Includes\ThumbFeatured;
+use App\Includes\StringTools;
 
 // http://bensmith.io/email-verification-with-laravel
 
@@ -72,7 +75,7 @@ class AdminController extends Controller
      *
      * @return void    
      */
-    public function __construct(Request $request,UrlGenerator $url,MailController $mail,MenuController $menu,PostsController $posts,DBQuerys $querys,ThumbFeatured $featured, AppearanceController $appearance)
+    public function __construct(Request $request,UrlGenerator $url,MailController $mail,MenuController $menu,PostsController $posts,DBQuerys $querys,ThumbFeatured $featured, AppearanceController $appearance,CommentsController $comments,LoaderController $loader,StringTools $tools)
     {
         $this->request      = $request; 
         $this->url          = $url;
@@ -82,6 +85,9 @@ class AdminController extends Controller
         $this->featured     = $featured;
         $this->posts        = $posts;
         $this->appearance   = $appearance;
+        $this->comments     = $comments;
+        $this->loader       = $loader;
+        $this->tools        = $tools;
     }
 
     /**
@@ -147,8 +153,16 @@ class AdminController extends Controller
         $in_dashboard = [
             1 => 'home',
             2 => 'updates',
-            3 => 'themes',
-            4 => 'profile'
+            5 => 'profile'
+        ];
+
+        $in_appearance = [
+            1 => 'themes',
+            2 => 'options'
+        ];
+
+        $in_settings = [
+            1 => 'general'
         ];
 
         $in_value = [
@@ -166,7 +180,9 @@ class AdminController extends Controller
             4 => 'trash'
         ];
 
-        $in_key = array_merge($in_dashboard,$in_value,$in_filter);
+        $in_plugins = $this->loader->current();
+
+        $in_key = array_merge($in_dashboard,$in_appearance,$in_settings,$in_value,$in_filter,$in_plugins);
 
         $end  = end($subpage);
         $ints = is_numeric($end) ? true : false;
@@ -204,12 +220,12 @@ class AdminController extends Controller
 
     public function rows ($id=0) 
     {
-        return DB::table('posts')->where(['id'=>$id])->get();
+        return $this->querys->querys('posts',['id'=>$id],false);
     }
 
     public function meta_value ($id=0) 
     {
-        return DB::table('posts_meta')->where(['pid'=>$id])->get();
+        return $this->querys->querys('posts_meta',['id'=>$id],false);
     }
 
     /**
@@ -230,6 +246,11 @@ class AdminController extends Controller
 
     /**
      * Create a new controller load.
+     *
+     * - admin
+     * - plugins
+     * - themes
+     * - global
      *
      * @return objects
      */
@@ -262,10 +283,22 @@ class AdminController extends Controller
             'meta'      =>  $this->meta($type),
             'meta_value'=>  $this->meta_value($this->intel($subpage)),
             'querys'    =>  $this->querys,
-            'featured'  =>  $this->featured
+            'featured'  =>  $this->featured,
+            'tools'     =>  $this->tools,
+            'plugin'    =>  $this->plugin_load(),
         ];
 
         return $returns;
+    }
+
+    public function plugin_load () 
+    {
+        return [
+            'label'   => $this->loader->label(),
+            'scripts' => $this->loader->scripts(),
+            'styles'  => $this->loader->styles(),
+            'load'    => $this->loader->load()  
+        ];
     }
 
     public function external_load () 
@@ -280,7 +313,7 @@ class AdminController extends Controller
      */
     public function view_id ($page=null,$id=null) 
     {
-        return view($page,$this->load($id,null,null));
+        return view($page,$this->load($id,null,null))->render();
     }
 
     /**
@@ -290,7 +323,7 @@ class AdminController extends Controller
      */
     public function view_actions ($page=null,$actions=[]) 
     {
-        return view($page,$this->load($this->i,$actions,null));
+        return view($page,$this->load($this->i,$actions,null))->render();
     }
  
     /**
@@ -300,7 +333,7 @@ class AdminController extends Controller
      */
     public function view ($page=null,$validate=null) 
     {
-        return view($page,$this->load($this->i,null,$validate));
+        return view($page,$this->load($this->i,null,$validate))->render();
     }
 
     /**
@@ -359,7 +392,6 @@ class AdminController extends Controller
      *
      * @return \Illuminate\Http\Response
      */
-
     public function page ($page=null) 
     {
         if( $this->request->session()->exists('username') AND $this->request->session()->exists('password')) {
@@ -416,9 +448,15 @@ class AdminController extends Controller
         $type = $this->type(true,$page);
         if($type != true AND in_array($page,$manual)) {
             return $this->template('admin/pages/'.$page);
+        } else if($type != true AND !in_array($page,$manual) AND $this->plugin($page) != false ) {
+            return $this->template('plugins/'.$page.'/'.$page);
         } else {
             return $this->template('admin/pages/'.$page);
-        }
+        }  
+    }
+
+    public function plugin ($page=null) {
+        return $this->loader->register($page);
     }
 
     /**
@@ -601,56 +639,131 @@ class AdminController extends Controller
         $sessions = $this->request->session()->all();
 
         /**
-         * ajaxs-handler
+         * ajaxs-handler ------------------------------------------------------ START
          * javascripts-ajaxs action-handler
         **/
-        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'posts-action' )  :
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'posts-action') :
             return $this->postsInsert();
         endif;
 
-        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'meta-action' )  :
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'meta-action') :
             return $this->view('admin/pages/posts/meta');
         endif;
 
-        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'media-action' )  :
+        /**
+         * ajaxs-handler (media)
+         * phpscripts-load action-handler
+        **/
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'media-action') :
             $media_id = intval($inputs['id']);
             return $this->view_id('admin/pages/media/browse',$media_id);
         endif;
 
-        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'media-thumbnail' )  :
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'media-thumbnail') :
             $media_id = intval($inputs['id']);
             return $this->view_id('admin/pages/media/selected',$media_id);
         endif;
 
-        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'categorys-action' )  :
-            return $this->categoryInsert();
-        endif;
-
-        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'categorys-row' )  :
-            return $this->categoryInsertRow();
-        endif;
-
-        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'comments-reply' )  :
-            return $this->view('admin/pages/comments/reply');
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'media-addfeatured') :
+            return $this->mediaFeaturedInsert();
         endif;
 
         /**
-         * actions-handler
+         * ajaxs-handler (category)
          * phpscripts-load action-handler
         **/
-        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->has('media-action') )  :
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'categorys-action') :
+            return $this->categoryInsert();
+        endif;
+
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'categorys-row') :
+            return $this->categoryInsertRow();
+        endif;
+
+        /**
+         * ajaxs-handler (comments)
+         * phpscripts-load action-handler
+        **/
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'comments-action') :
+            return $this->comments->action();
+        endif;
+
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'comments-reply') :
+            return $this->view('admin/pages/comments/reply');
+        endif;
+
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'option-action') :
+            return $this->optionInsert();
+        endif;
+
+        /**
+         * ajaxs-handler (appearance)
+         * phpscripts-load action-handler
+        **/
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'appearance-field') :
+            return $this->view_actions('admin/pages/appearance/fields',['type'=>'text','loop'=>false]);
+        endif;
+
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'appearance-submit') :
+            return $this->appearance->metaInsert();
+        endif;
+
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->action == 'appearance-form') :
+            $id   = intval($inputs['id']);
+            $form = intval($inputs['form']) == 1 ? true : false;
+            if($form==1) :
+                return $this->appearance->metaForminsert($id,$inputs['name'],$inputs['type'],$inputs['value']);
+            endif;
+            if($form==0) :
+                $value = $this->appearance->metaData($id);
+                return response()->json($value);
+            endif;
+        endif;
+
+        return $this->loader->action();
+
+        /**
+         * ajaxs-handler ------------------------------------------------------ END
+         * javascripts-ajaxs action-handler
+        **/
+
+        /**
+         * actions-handler ------------------------------------------------------------------- START
+         * phpscripts-load action-handler
+        **/
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->has('media-action')) :
             return $this->mediaInsert($tab);
         endif;
 
-        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->has('filter-submit') )  :
+        if ($this->request->isMethod('post') AND $this->request->has('_token') AND $this->request->has('filter-submit')) :
             return $this->postsFilter($page);
         endif;
 
         if (!$this->request->session()->has('username')) :
             return redirect('/admin');
         endif;
+        /**
+         * actions-handler ------------------------------------------------------------------- END
+         * phpscripts-load action-handler
+        **/
 
         die();
+    }
+
+    /**
+     * application event - delete (global)
+     *
+     * @return \Illuminate\Http\Response
+     */
+    public function delete ($page=null,$id=0) 
+    {
+        if($id != 0) :
+
+            if($page=='media') :
+                return $this->mediaDelete($id);
+            endif;
+
+        endif;
     }
 
     /**
@@ -792,6 +905,33 @@ class AdminController extends Controller
 
             endforeach;
         endif;
+    }
+
+    /**
+     * application event - action function (option-insert).
+     *
+     * @return \Illuminate\Http\Response
+     */
+    public function optionInsert () 
+    {
+        $fields = $this->request->fields;
+        $sessions = $this->request->session()->all();
+
+        $key = trim($fields['name']);
+
+        $data = [
+            'name'  => $key,
+            'value' => $fields['value'],
+            'author'=> 0
+        ];
+
+        $exists = $this->querys->option_exists($key);
+
+        if($exists==true) :
+            return DB::table('options')->where(['name'=>$key])->update($data);
+        else :
+            return DB::table('options')->insert($data);
+        endif;
     } 
 
     /**
@@ -813,9 +953,12 @@ class AdminController extends Controller
             'height'
         ];
 
-        if(!is_null($files) && count($files)>=0 || is_array($files)) : 
+        $validator = Validator::make(['media-file'=>$files],['media-file'=>'required'],['media-file.required'=>'The media file (uploader) field is required.']);
+        $errors = $validator->errors();
 
-            foreach($files as $keys => $vals):
+        if(!is_null($files) && count($files)>=0 || is_array($files) && $validator->fails() != true) :
+
+            foreach($files as $keys => $vals) :
 
                 $names = time().$keys.'.'.$vals->getClientOriginalExtension();
                 $paths = storage_path('app/public/uploads/'.date('Y/n'));
@@ -855,12 +998,38 @@ class AdminController extends Controller
 
         endif;
 
-        if(!is_null($id)) {
+        if(!is_null($id) and $validator->fails() != true) {
             return redirect('/admin/media/edit/'.$id);
-        } else {
-            return redirect('/admin/media');
+        } else if(is_null($id) and $validator->fails() != true){
+            return redirect('/admin/media/');
+        } else if($validator->fails() != false){
+            $message = $errors->all();  
+            return $this->template('admin/pages/media',$message);
         }
+    }
 
+    public function mediaFeaturedInsert () 
+    {
+        $files = $this->request->file('forms');
+        $forms = $this->request->forms;
+
+        var_dump($files);
+        var_dump($forms);
+    }
+
+    /**
+     * application event - action function (media-delete).
+     *
+     * @return \Illuminate\Http\Response
+     */
+    public function mediaDelete ($id=0) 
+    {
+        $rows = $this->querys->media_row($id);
+        $path = $rows->path.'/'.$rows->name;
+
+        File::delete($path);
+        DB::table('media')->where(['id'=>$id])->delete();
+        return redirect('/admin/media/');
     }
 
     /**
@@ -900,12 +1069,18 @@ class AdminController extends Controller
             if( $ids !=0 ) :
 
                 DB::table('categorys')->where('id',$ids)->update($merge);
-                $return = ['cid'=>$ids];
+                $return = [
+                    'cid'   => $ids,
+                    'crow'  => $merge
+                ];
 
             else :
 
                 $ids = DB::table('categorys')->insertGetId($merge);
-                $return = ['cid'=>$ids];
+                $return = [
+                    'cid'   => $ids,
+                    'crow'  => $merge
+                ];
 
             endif;
 
@@ -922,8 +1097,7 @@ class AdminController extends Controller
     public function categoryInsertRow () 
     {
         $ids = intval($this->request->ids);
-        var_dump($ids);
-        return $this->view('admin/pages/posts/categoryrow');
+        return $this->view('admin/pages/posts/categoryrow',['id'=>$ids]);
     }
 
     /**
@@ -933,21 +1107,29 @@ class AdminController extends Controller
      */
     public function postsFilter ($page=null) 
     {
-        $actions = $this->request->action;
-        $searchs = $this->request->search;
+        $actions   = $this->request->action;
+        $categorys = $this->request->category;
+        $searchs   = $this->request->search;
+        $deletes   = $this->request->delete_id;
+
+        $filters = [
+                'action'   => $actions,  
+                'category' => $categorys,
+                'search'   => $searchs
+            ];
 
         if ($actions == 0 AND !is_null($searchs))  :
-
-            $filters = [
-                'action' => $actions,
-                'search' => $searchs
-            ];
 
             return $this->template_actions('admin/pages/posts',$filters);
 
         elseif ($actions == 1 AND is_null($searchs)) :
 
-            return $this->template('admin/pages/posts');
+            $is_deletes = explode(',',$deletes);
+            foreach($is_deletes as $keys => $vals) :
+                DB::table('posts')->where(['id'=>$vals])->delete();
+            endforeach;
+
+            return $this->template('admin/pages/posts',$filters);
 
         elseif ($actions == 2 AND is_null($searchs)) :
 
